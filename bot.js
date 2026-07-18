@@ -19,12 +19,18 @@ const {
 // CONFIG
 // =====================
 const STAFF_CHANNEL_ID = "1522304854310256680";
+const ESPORT_CHANNEL_ID = "1527664119682044135";
 const LOG_CHANNEL_ID = "1522335394522333275";
 const STAFF_ROLE_ID = "1524308311820730398";
 const RECRUIT_CATEGORY_ID = "1524308791410294794";
-// =====================
-// DISCORD BOT
-// =====================
+
+const CATEGORY_COLORS = {
+  "XBZ Esport": 0x0066ff,
+  "XBZ Staff": 0xc2a344,
+};
+
+const clamp = (s, max = 1024) => (s && s.length > max ? s.slice(0, max - 1) + "…" : s);
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds
@@ -35,149 +41,165 @@ client.once("ready", () => {
   console.log("🟢 BOT CONNECTÉ :", client.user.tag);
 });
 
-// =====================
-// API RECRUTEMENT
-// =====================
 app.post("/recrutement", async (req, res) => {
   try {
 
     console.log("🔥 REQUÊTE REÇUE :", req.body);
 
     const data = req.body;
+    console.log("📂 CATÉGORIE :", data.categorie, "| 🎯 RÔLE :", data.role);
     console.log("🎮 JEU :", data.jeu);
-console.log("🔗 RL TRACKER :", data.rltracker);
+    console.log("🔗 RL TRACKER :", data.rltracker);
 
-    // ID unique propre
     const id = `XBZ-${Date.now()}`;
 
-    const channel = await client.channels.fetch(STAFF_CHANNEL_ID).catch(() => null);
-const logChannel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+    const isEsport = Boolean(data.jeu && data.jeu.trim());
 
-if (!channel) {
-  console.log("❌ Salon recrutement introuvable");
-  return res.status(500).send("Channel not found");
-}
+    const targetChannelId =
+      isEsport && ESPORT_CHANNEL_ID ? ESPORT_CHANNEL_ID : STAFF_CHANNEL_ID;
 
-if (!logChannel) {
-  console.log("❌ Salon LOG introuvable");
-} else {
-  console.log("✅ Salon LOG trouvé");
-}
-    // =========================
-    // EMBED RECRUTEMENT (PROPRE)
-    // =========================
+    const channel = await client.channels.fetch(targetChannelId).catch(() => null);
+    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
 
-     const fields = [
-  { name: "👤 Nom", value: data.nom || "N/A", inline: true },
-  { name: "🎂 Âge", value: data.age || "N/A", inline: true },
-  { name: "💬 Discord", value: data.discord || "N/A", inline: false },
-  { name: "🎮 Pseudo", value: data.pseudo || "N/A", inline: true },
-  { name: "🕹 Jeu", value: data.jeu || "N/A", inline: true },
-  { name: "🏆 Rang", value: data.rang || "N/A", inline: true }
-];
+    if (!channel) {
+      console.log("❌ Salon recrutement introuvable");
+      return res.status(500).send("Channel not found");
+    }
 
-// Ajoute RL Tracker uniquement pour Rocket League
-if (data.jeu?.trim() === "Rocket League") {
-  fields.push({
-    name: "🔗 RL Tracker",
-    value: data.rltracker && data.rltracker.startsWith("http")
-      ? `[Voir le profil RL Tracker](${data.rltracker})`
-      : "Non renseigné",
-    inline: false
-  });
-}
+    if (!logChannel) {
+      console.log("❌ Salon LOG introuvable");
+    } else {
+      console.log("✅ Salon LOG trouvé");
+    }
 
-fields.push({
-  name: "🧠 Motivation",
-  value: data.motiv || "N/A"
-});
-const embed = new EmbedBuilder()
-  .setTitle("🦇 NOUVELLE CANDIDATURE XBZ")
-  .setColor(0x0066FF)
-  .setDescription(`🆔 ID : **${id}**`)
-  .addFields(fields)
-  .setFooter({ text: "XBZ Recrutement System" })
-  .setTimestamp();
+    const fields = [
+      { name: "📂 Catégorie", value: data.categorie || "N/A", inline: true },
+      { name: "🎯 Rôle", value: data.role || "N/A", inline: true },
+      { name: "\u200B", value: "\u200B", inline: true },
+      { name: "👤 Nom", value: data.nom || "N/A", inline: true },
+      { name: "🎂 Âge", value: data.age || "N/A", inline: true },
+      { name: "\u200B", value: "\u200B", inline: true },
+      { name: "💬 Discord", value: data.discord || "N/A", inline: true },
+      { name: "🎮 Pseudo", value: data.pseudo || "N/A", inline: true },
+      {
+        name: "🌍 Pays (résidence / naissance)",
+        value: `${data.pays1 || "N/A"} / ${data.pays2 || "N/A"}`,
+        inline: false,
+      },
+    ];
 
-const row = new ActionRowBuilder().addComponents(
-  new ButtonBuilder()
-    .setCustomId(`accept_${id}`)
-    .setLabel("✅ Accepter")
-    .setStyle(ButtonStyle.Success),
+    if (isEsport) {
+      fields.push({ name: "🕹 Jeu", value: data.jeu, inline: true });
+      fields.push({ name: "🏆 Rang", value: data.rang || "N/A", inline: true });
 
-  new ButtonBuilder()
-    .setCustomId(`refuse_${id}`)
-    .setLabel("❌ Refuser")
-    .setStyle(ButtonStyle.Danger),
+      if (data.jeu.trim() === "Rocket League") {
+        fields.push({
+          name: "🔗 RL Tracker",
+          value:
+            data.rltracker && data.rltracker.startsWith("http")
+              ? `[Voir le profil RL Tracker](${data.rltracker})`
+              : "Non renseigné",
+          inline: false,
+        });
+      }
+    }
 
-  new ButtonBuilder()
-    .setCustomId(`interview_${id}`)
-    .setLabel("🟡 Entretien")
-    .setStyle(ButtonStyle.Secondary)
-);
+    fields.push({ name: "📜 Expérience", value: clamp(data.exp) || "N/A" });
+    fields.push({ name: "🧠 Motivation", value: clamp(data.motiv) || "N/A" });
 
-await channel.send({
-  embeds: [embed],
-  components: [row]
-});
-    // =====================
-// LOGS COMPLETS
-// =====================
+    const embed = new EmbedBuilder()
+      .setTitle("🦇 NOUVELLE CANDIDATURE XBZ")
+      .setColor(CATEGORY_COLORS[data.categorie] ?? 0x0066ff)
+      .setDescription(`🆔 ID : **${id}**`)
+      .addFields(fields)
+      .setFooter({ text: "XBZ Recrutement System" })
+      .setTimestamp();
 
-if (logChannel) {
-  await logChannel.send({
-    content:
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`accept_${id}`)
+        .setLabel("✅ Accepter")
+        .setStyle(ButtonStyle.Success),
+
+      new ButtonBuilder()
+        .setCustomId(`refuse_${id}`)
+        .setLabel("❌ Refuser")
+        .setStyle(ButtonStyle.Danger),
+
+      new ButtonBuilder()
+        .setCustomId(`interview_${id}`)
+        .setLabel("🟡 Entretien")
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+    await channel.send({
+      embeds: [embed],
+      components: [row]
+    });
+
+    if (logChannel) {
+      const esportLog = isEsport
+        ? `\n🕹 Jeu : ${data.jeu}
+🏆 Rang : ${data.rang || "N/A"}
+🔗 RL Tracker : ${
+            data.rltracker && data.rltracker.startsWith("http")
+              ? data.rltracker
+              : "Non renseigné"
+          }`
+        : "";
+
+      await logChannel.send({
+        content:
 `📩 **Nouvelle candidature reçue**
 
 🆔 ID : ${id}
+
+📂 Catégorie : ${data.categorie || "N/A"}
+🎯 Rôle : ${data.role || "N/A"}
 
 👤 Nom : ${data.nom || "N/A"}
 🎂 Âge : ${data.age || "N/A"}
 💬 Discord : ${data.discord || "N/A"}
 🎮 Pseudo : ${data.pseudo || "N/A"}
-🕹 Jeu : ${data.jeu || "N/A"}
-🏆 Rang : ${data.rang || "N/A"}
+🌍 Pays : ${data.pays1 || "N/A"} / ${data.pays2 || "N/A"}${esportLog}
 
-🔗 RL Tracker :
-${data.rltracker && data.rltracker.startsWith("http")
-? data.rltracker
-: "Non renseigné"}
+📜 Expérience :
+${data.exp || "N/A"}
 
 🧠 Motivation :
 ${data.motiv || "N/A"}`
-  });
+      });
 
-  console.log("📜 LOG ENVOYÉ");
-}
-   console.log("📨 CANDIDATURE ENVOYÉE SUR DISCORD");
+      console.log("📜 LOG ENVOYÉ");
+    }
+    console.log("📨 CANDIDATURE ENVOYÉE SUR DISCORD");
 
-return res.status(200).send("OK");
+    return res.status(200).send("OK");
 
-} catch (err) {
-  console.error("❌ ERREUR API :", err);
-  return res.status(500).send("ERROR");
-}
+  } catch (err) {
+    console.error("❌ ERREUR API :", err);
+    return res.status(500).send("ERROR");
+  }
 });
 
-// =====================
-// HOME ROUTE
-// =====================
 app.get("/", (req, res) => {
   res.send("XBZ BOT ONLINE ✔");
 });
 
-// =====================
-// START SERVER
-// =====================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log("🌐 SERVER ON PORT", PORT);
 });
 
-// =====================
-// LOGIN DISCORD
-// =====================
+const SELF_URL = process.env.RENDER_EXTERNAL_URL;
+if (SELF_URL && typeof fetch === "function") {
+  setInterval(() => {
+    fetch(SELF_URL).catch(() => {});
+  }, 10 * 60 * 1000);
+  console.log("⏰ Keep-alive activé →", SELF_URL);
+}
+
 client.login(process.env.TOKEN);
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
@@ -187,9 +209,6 @@ client.on("interactionCreate", async (interaction) => {
   try {
     const logChannel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
 
-    // =====================
-    // ACCEPT
-    // =====================
     if (action === "accept") {
       await interaction.update({
         content: `🟢 CANDIDATURE **${id}** ACCEPTÉE par ${interaction.user.tag}`,
@@ -202,9 +221,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // =====================
-    // REFUSE
-    // =====================
     if (action === "refuse") {
       await interaction.update({
         content: `🔴 CANDIDATURE **${id}** REFUSÉE par ${interaction.user.tag}`,
@@ -217,9 +233,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // =====================
-    // INTERVIEW (MODE ATTENTE)
-    // =====================
     if (action === "interview") {
 
       const newRow = new ActionRowBuilder().addComponents(
