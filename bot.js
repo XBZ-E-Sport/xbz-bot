@@ -19,9 +19,7 @@ const {
 // CONFIG
 // =====================
 const STAFF_CHANNEL_ID = "1522304854310256680";
-// Optionnel : salon dédié aux candidatures Esport.
-// Laisse "" pour tout envoyer dans STAFF_CHANNEL_ID.
-const ESPORT_CHANNEL_ID = "";
+const ESPORT_CHANNEL_ID = "1527664119682044135";
 const LOG_CHANNEL_ID = "1522335394522333275";
 const STAFF_ROLE_ID = "1524308311820730398";
 const RECRUIT_CATEGORY_ID = "1524308791410294794";
