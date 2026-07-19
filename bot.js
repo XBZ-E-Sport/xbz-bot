@@ -95,8 +95,8 @@ app.post("/recrutement", async (req, res) => {
       { name: "💬 Discord", value: data.discord || "N/A", inline: true },
       { name: "🎮 Pseudo", value: data.pseudo || "N/A", inline: true },
       {
-        name: "🌍 Pays (résidence / naissance)",
-        value: `${data.pays1 || "N/A"} / ${data.pays2 || "N/A"}`,
+        name: "🌍 Pays de résidence",
+        value: data.pays1 || "N/A",
         inline: false,
       },
     ];
@@ -178,7 +178,7 @@ app.post("/recrutement", async (req, res) => {
 🎂 Âge : ${data.age || "N/A"}
 💬 Discord : ${data.discord || "N/A"}
 🎮 Pseudo : ${data.pseudo || "N/A"}
-🌍 Pays : ${data.pays1 || "N/A"} / ${data.pays2 || "N/A"}${esportLog}
+🌍 Pays de résidence : ${data.pays1 || "N/A"}${esportLog}
 
 📜 Expérience :
 ${data.exp || "N/A"}
