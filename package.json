@@ -6,6 +6,7 @@
     "start": "node bot.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.2",
     "body-parser": "^2.3.0",
     "cors": "^2.8.5",
     "discord.js": "^14.26.4",
