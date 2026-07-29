@@ -19,6 +19,9 @@ const {
 // =====================
 // CONFIG
 // =====================
+// =====================
+// CONFIG
+// =====================
 const STAFF_CHANNEL_ID = "1522304854310256680";
 const ESPORT_CHANNEL_ID = "1527664119682044135";
 const LOG_CHANNEL_ID = "1522335394522333275";
@@ -28,7 +31,10 @@ const RECRUIT_CATEGORY_ID = "1524308791410294794";
 const SUPPORT_CHANNEL_ID = process.env.SUPPORT_CHANNEL_ID || STAFF_CHANNEL_ID;
 
 // Couleur de l'embed selon la catégorie de candidature
+// Couleur de l'embed selon la catégorie de candidature
 const CATEGORY_COLORS = {
+  "XBZ Esport": 0x0066ff, // bleu
+  "XBZ Staff": 0xa05aff, // violet
   "XBZ Esport": 0x0066ff, // bleu
   "XBZ Staff": 0xa05aff, // violet
 };
@@ -108,8 +114,10 @@ app.post("/recrutement", checkSecret, async (req, res) => {
     const id = isUuid(data.id) ? data.id : `XBZ-${Date.now()}`;
 
     // Candidature Esport uniquement si un jeu est renseigné
+    // Candidature Esport uniquement si un jeu est renseigné
     const isEsport = Boolean(data.jeu && data.jeu.trim());
 
+    // Routage : salon Esport dédié si configuré, sinon salon staff par défaut
     // Routage : salon Esport dédié si configuré, sinon salon staff par défaut
     const targetChannelId =
       isEsport && ESPORT_CHANNEL_ID ? ESPORT_CHANNEL_ID : STAFF_CHANNEL_ID;
@@ -130,6 +138,9 @@ app.post("/recrutement", checkSecret, async (req, res) => {
     // =========================
     // EMBED RECRUTEMENT (PROPRE)
     // =========================
+    // =========================
+    // EMBED RECRUTEMENT (PROPRE)
+    // =========================
 
     const fields = [
       { name: "📂 Catégorie", value: data.categorie || "N/A", inline: true },
@@ -141,6 +152,8 @@ app.post("/recrutement", checkSecret, async (req, res) => {
       { name: "💬 Discord", value: data.discord || "N/A", inline: true },
       { name: "🎮 Pseudo", value: data.pseudo || "N/A", inline: true },
       {
+        name: "🌍 Pays de résidence",
+        value: data.pays1 || "N/A",
         name: "🌍 Pays de résidence",
         value: data.pays1 || "N/A",
         inline: false,
@@ -200,6 +213,9 @@ app.post("/recrutement", checkSecret, async (req, res) => {
     // =====================
     // LOGS COMPLETS
     // =====================
+    // =====================
+    // LOGS COMPLETS
+    // =====================
 
     if (logChannel) {
       const esportLog = isEsport
@@ -225,6 +241,7 @@ app.post("/recrutement", checkSecret, async (req, res) => {
 🎂 Âge : ${data.age || "N/A"}
 💬 Discord : ${data.discord || "N/A"}
 🎮 Pseudo : ${data.pseudo || "N/A"}
+🌍 Pays de résidence : ${data.pays1 || "N/A"}${esportLog}
 🌍 Pays de résidence : ${data.pays1 || "N/A"}${esportLog}
 
 📜 Expérience :
@@ -293,12 +310,32 @@ app.get("/", (req, res) => {
 // =====================
 // START SERVER
 // =====================
+// =====================
+// START SERVER
+// =====================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log("🌐 SERVER ON PORT", PORT);
 });
 
+// =====================
+// KEEP-ALIVE (Render free : empêche la mise en veille)
+// Le bot se ping lui-même toutes les 10 min → Render voit du trafic et ne
+// coupe pas le process, donc la connexion Discord reste active (boutons OK).
+// RENDER_EXTERNAL_URL est fourni automatiquement par Render.
+// =====================
+const SELF_URL = process.env.RENDER_EXTERNAL_URL;
+if (SELF_URL && typeof fetch === "function") {
+  setInterval(() => {
+    fetch(SELF_URL).catch(() => {});
+  }, 10 * 60 * 1000);
+  console.log("⏰ Keep-alive activé →", SELF_URL);
+}
+
+// =====================
+// LOGIN DISCORD
+// =====================
 // =====================
 // KEEP-ALIVE (Render free : empêche la mise en veille)
 // Le bot se ping lui-même toutes les 10 min → Render voit du trafic et ne
@@ -363,6 +400,9 @@ client.on("interactionCreate", async (interaction) => {
     // =====================
     // REFUSE
     // =====================
+    // =====================
+    // REFUSE
+    // =====================
     if (action === "refuse") {
       await interaction.update({
         content: `🔴 CANDIDATURE **${id}** REFUSÉE par ${interaction.user.tag}${dbNote}`,
@@ -375,6 +415,9 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    // =====================
+    // INTERVIEW (MODE ATTENTE)
+    // =====================
     // =====================
     // INTERVIEW (MODE ATTENTE)
     // =====================
