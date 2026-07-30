@@ -1,3 +1,7 @@
+// Charge les variables d'un fichier .env EN LOCAL. Sur Render, les variables
+// viennent déjà de la plateforme → dotenv est alors sans effet (aucun risque).
+require("dotenv").config({ quiet: true });
+
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
