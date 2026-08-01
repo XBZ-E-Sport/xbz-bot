@@ -1,5 +1,3 @@
-// Charge les variables d'un fichier .env EN LOCAL. Sur Render, les variables
-// viennent déjà de la plateforme → dotenv est alors sans effet (aucun risque).
 require("dotenv").config({ quiet: true });
 
 const express = require("express");
@@ -10,8 +8,7 @@ const { createClient } = require("@supabase/supabase-js");
 const app = express();
 
 app.use(cors());
-app.use(express.json());
-// Formulaire du panel (/panel) → corps encodé en urlencoded.
+app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 const startedAt = Date.now();
@@ -22,7 +19,9 @@ const {
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
-  ButtonStyle
+  ButtonStyle,
+  MessageFlags,
+  Events
 } = require("discord.js");
 
 // =====================
@@ -33,17 +32,74 @@ const ESPORT_CHANNEL_ID = "1527664119682044135";
 const LOG_CHANNEL_ID = "1522335394522333275";
 const STAFF_ROLE_ID = "1524308311820730398";
 const RECRUIT_CATEGORY_ID = "1524308791410294794";
-// Salon des messages support. À défaut → salon staff.
 const SUPPORT_CHANNEL_ID = process.env.SUPPORT_CHANNEL_ID || STAFF_CHANNEL_ID;
 
-// Couleur de l'embed selon la catégorie de candidature
 const CATEGORY_COLORS = {
-  "XBZ Esport": 0x0066ff, // bleu
-  "XBZ Staff": 0xa05aff, // violet
+  "XBZ Esport": 0x0066ff,
+  "XBZ Staff": 0xa05aff,
 };
 
-// Tronque une valeur pour respecter la limite Discord (1024 car. par field)
 const clamp = (s, max = 1024) => (s && s.length > max ? s.slice(0, max - 1) + "…" : s);
+
+const field = (name, value, inline = false, max = inline ? 256 : 1024) => ({
+  name,
+  value: clamp(String(value ?? "").trim() || "N/A", max),
+  inline,
+});
+
+const SPACER = { name: "​", value: "​", inline: true };
+
+const SITE_URL = (process.env.SITE_URL || "").replace(/\/+$/, "");
+const adminUrl = /^https?:\/\//.test(SITE_URL) ? `${SITE_URL}/admin` : null;
+
+// =====================
+// MONITORING (#12)
+// Le bot envoie ses erreurs au MÊME webhook Discord que le site
+// (DISCORD_ERROR_WEBHOOK_URL) : un seul salon pour toutes les alertes.
+// Même format d'embed et même anti-flood (1 signature / 60 s) que le site.
+// =====================
+const ERROR_WEBHOOK = process.env.DISCORD_ERROR_WEBHOOK_URL || "";
+const recentErrors = new Map();
+
+async function reportError(message, { stack, path, extra } = {}) {
+  console.error("❌", message, path ? `(${path})` : "");
+  if (!ERROR_WEBHOOK) return;
+
+  const signature = `${path ?? ""}:${message}`;
+  const now = Date.now();
+  if (now - (recentErrors.get(signature) ?? 0) < 60_000) return;
+  if (recentErrors.size > 300) recentErrors.clear();
+  recentErrors.set(signature, now);
+
+  const fields = [{ name: "Source", value: "bot", inline: true }];
+  if (path) fields.push({ name: "Chemin", value: clamp(path, 200), inline: true });
+  for (const [k, v] of Object.entries(extra ?? {})) {
+    if (v == null || v === "") continue;
+    fields.push({ name: clamp(k, 40), value: clamp(String(v), 200), inline: true });
+  }
+
+  try {
+    await fetch(ERROR_WEBHOOK, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: "XBZ · Erreurs",
+        embeds: [
+          {
+            title: clamp(`🚨 ${message}`, 240),
+            description: stack ? "```\n" + clamp(String(stack), 1500) + "\n```" : undefined,
+            color: 0xff4444,
+            fields,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (e) {
+    console.error("[monitor] envoi Discord échoué :", e.message);
+  }
+}
 
 // =====================
 // SUPABASE (connexion BDD)
@@ -62,11 +118,8 @@ if (!supabase) {
   console.warn("⚠️ Supabase non configuré (SUPABASE_URL / SUPABASE_SECRET_KEY) — synchro BDD désactivée.");
 }
 
-// Action bouton → valeur de `candidatures.statut` (aligné sur le back-office).
 const STATUS_MAP = { accept: "accepte", refuse: "refuse", interview: "entretien" };
 
-// Un vrai id de candidature est un UUID (les anciens messages utilisaient
-// `XBZ-<timestamp>` → on ne tente pas d'update BDD dans ce cas).
 const isUuid = (s) =>
   typeof s === "string" &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
@@ -95,8 +148,10 @@ const client = new Client({
   ]
 });
 
-client.once("ready", () => {
+client.once(Events.ClientReady, () => {
   console.log("🟢 BOT CONNECTÉ :", client.user.tag);
+  console.log(supabase ? "💾 Supabase connecté" : "💾 Supabase non configuré");
+  if (adminUrl) console.log("📂 Back-office :", adminUrl);
 });
 
 // =====================
@@ -112,14 +167,10 @@ app.post("/recrutement", checkSecret, async (req, res) => {
     console.log("🎮 JEU :", data.jeu);
     console.log("🔗 RL TRACKER :", data.rltracker);
 
-    // ID de la candidature : on utilise le vrai id BDD (UUID) envoyé par le site.
-    // Repli sur un id local si absent (anciens appels) → pas de synchro BDD.
     const id = isUuid(data.id) ? data.id : `XBZ-${Date.now()}`;
 
-    // Candidature Esport uniquement si un jeu est renseigné
     const isEsport = Boolean(data.jeu && data.jeu.trim());
 
-    // Routage : salon Esport dédié si configuré, sinon salon staff par défaut
     const targetChannelId =
       isEsport && ESPORT_CHANNEL_ID ? ESPORT_CHANNEL_ID : STAFF_CHANNEL_ID;
 
@@ -127,8 +178,11 @@ app.post("/recrutement", checkSecret, async (req, res) => {
     const logChannel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
 
     if (!channel) {
-      console.log("❌ Salon recrutement introuvable");
-      return res.status(500).send("Channel not found");
+      await reportError("Salon recrutement introuvable", {
+        path: "/recrutement",
+        extra: { salon: targetChannelId },
+      });
+      return res.status(500).json({ ok: false, error: "Channel not found" });
     }
 
     if (!logChannel) {
@@ -141,41 +195,36 @@ app.post("/recrutement", checkSecret, async (req, res) => {
     // =========================
 
     const fields = [
-      { name: "📂 Catégorie", value: data.categorie || "N/A", inline: true },
-      { name: "🎯 Rôle", value: data.role || "N/A", inline: true },
-      { name: "​", value: "​", inline: true },
-      { name: "👤 Nom", value: data.nom || "N/A", inline: true },
-      { name: "🎂 Âge", value: data.age || "N/A", inline: true },
-      { name: "​", value: "​", inline: true },
-      { name: "💬 Discord", value: data.discord || "N/A", inline: true },
-      { name: "🎮 Pseudo", value: data.pseudo || "N/A", inline: true },
-      {
-        name: "🌍 Pays de résidence",
-        value: data.pays1 || "N/A",
-        inline: false,
-      },
+      field("📂 Catégorie", data.categorie, true),
+      field("🎯 Rôle", data.role, true),
+      SPACER,
+      field("👤 Nom", data.nom, true),
+      field("🎂 Âge", data.age, true),
+      SPACER,
+      field("💬 Discord", data.discord, true),
+      field("🎮 Pseudo", data.pseudo, true),
+      field("🌍 Pays de résidence", data.pays1, false, 256),
     ];
 
-    // Champs spécifiques à l'Esport (jeu / roster souhaité / RL Tracker)
     if (isEsport) {
-      fields.push({ name: "🕹 Jeu", value: data.jeu, inline: true });
-      // `data.rang` : conservé pour compat, contient le ROSTER souhaité.
-      fields.push({ name: "🎯 Roster souhaité", value: data.rang || "N/A", inline: true });
+      fields.push(field("🕹 Jeu", data.jeu, true));
+
+      fields.push(field("🎯 Roster souhaité", data.roster ?? data.rang, true));
 
       if (data.jeu.trim() === "Rocket League") {
+        const tracker = String(data.rltracker ?? "").trim();
         fields.push({
           name: "🔗 RL Tracker",
-          value:
-            data.rltracker && data.rltracker.startsWith("http")
-              ? `[Voir le profil RL Tracker](${data.rltracker})`
-              : "Non renseigné",
+          value: tracker.startsWith("http")
+            ? `[Voir le profil RL Tracker](${clamp(tracker, 900)})`
+            : "Non renseigné",
           inline: false,
         });
       }
     }
 
-    fields.push({ name: "📜 Expérience", value: clamp(data.exp) || "N/A" });
-    fields.push({ name: "🧠 Motivation", value: clamp(data.motiv) || "N/A" });
+    fields.push(field("📜 Expérience", data.exp));
+    fields.push(field("🧠 Motivation", data.motiv));
 
     const embed = new EmbedBuilder()
       .setTitle("🦇 NOUVELLE CANDIDATURE XBZ")
@@ -202,6 +251,12 @@ app.post("/recrutement", checkSecret, async (req, res) => {
         .setStyle(ButtonStyle.Secondary)
     );
 
+    if (adminUrl) {
+      row.addComponents(
+        new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(adminUrl).setLabel("📂 Back-office")
+      );
+    }
+
     await channel.send({
       embeds: [embed],
       components: [row]
@@ -213,16 +268,14 @@ app.post("/recrutement", checkSecret, async (req, res) => {
     if (logChannel) {
       const esportLog = isEsport
         ? `\n🕹 Jeu : ${data.jeu}
-🎯 Roster souhaité : ${data.rang || "N/A"}
+🎯 Roster souhaité : ${data.roster ?? data.rang ?? "N/A"}
 🔗 RL Tracker : ${
             data.rltracker && data.rltracker.startsWith("http")
               ? data.rltracker
               : "Non renseigné"
           }`
         : "";
-
-      await logChannel.send({
-        content:
+      const logContent =
 `📩 **Nouvelle candidature reçue**
 
 🆔 ID : ${id}
@@ -240,18 +293,25 @@ app.post("/recrutement", checkSecret, async (req, res) => {
 ${data.exp || "N/A"}
 
 🧠 Motivation :
-${data.motiv || "N/A"}`
-      });
+${data.motiv || "N/A"}`;
 
-      console.log("📜 LOG ENVOYÉ");
+      try {
+        await logChannel.send({ content: clamp(logContent, 1900) });
+        console.log("📜 LOG ENVOYÉ");
+      } catch (e) {
+        await reportError(`Log candidature non envoyé : ${e.message}`, { path: "/recrutement" });
+      }
     }
     console.log("📨 CANDIDATURE ENVOYÉE SUR DISCORD");
 
-    return res.status(200).send("OK");
+    return res.status(200).json({ ok: true, id });
 
   } catch (err) {
-    console.error("❌ ERREUR API :", err);
-    return res.status(500).send("ERROR");
+    await reportError(`Candidature non postée : ${err.message}`, {
+      stack: err.stack,
+      path: "/recrutement",
+    });
+    return res.status(500).json({ ok: false, error: "ERROR" });
   }
 });
 
@@ -266,29 +326,37 @@ app.post("/support", checkSecret, async (req, res) => {
 
     const channel = await client.channels.fetch(SUPPORT_CHANNEL_ID).catch(() => null);
     if (!channel) {
-      console.log("❌ Salon support introuvable");
-      return res.status(500).send("Channel not found");
+      await reportError("Salon support introuvable", {
+        path: "/support",
+        extra: { salon: SUPPORT_CHANNEL_ID },
+      });
+      return res.status(500).json({ ok: false, error: "Channel not found" });
     }
 
     const embed = new EmbedBuilder()
       .setTitle("✉️ NOUVEAU MESSAGE SUPPORT")
       .setColor(0x00bfff)
       .addFields(
-        { name: "👤 Nom", value: data.nom || "N/A", inline: true },
-        { name: "📧 Email", value: data.email || "N/A", inline: true },
-        { name: "🏷 Sujet", value: data.sujet || "N/A", inline: true },
-        { name: "💬 Message", value: clamp(data.message) || "N/A" }
+        field("👤 Nom", data.nom, true),
+        field("📧 Email", data.email, true),
+        field("🏷 Sujet", data.sujet, true),
+        field("💬 Message", data.message)
       )
       .setFooter({ text: "XBZ Support System" })
       .setTimestamp();
 
+    if (data.id) embed.setDescription(`🆔 ID : **${clamp(String(data.id), 100)}**`);
+
     await channel.send({ embeds: [embed] });
     console.log("📨 MESSAGE SUPPORT ENVOYÉ SUR DISCORD");
 
-    return res.status(200).send("OK");
+    return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error("❌ SUPPORT ERROR :", err);
-    return res.status(500).send("ERROR");
+    await reportError(`Message support non posté : ${err.message}`, {
+      stack: err.stack,
+      path: "/support",
+    });
+    return res.status(500).json({ ok: false, error: "ERROR" });
   }
 });
 
@@ -322,7 +390,6 @@ app.get("/health", (_req, res) => {
 // =====================
 const PANEL_PASSWORD = process.env.PANEL_PASSWORD || "";
 
-// Comparaison à temps constant (évite une attaque temporelle sur le mot de passe).
 function passwordOk(input) {
   if (!PANEL_PASSWORD) return false;
   const a = Buffer.from(String(input ?? ""));
@@ -392,15 +459,14 @@ function panelPage(message = "") {
 
 app.get("/panel", (_req, res) => res.send(panelPage()));
 
-// ⚠️ Le process s'arrête : c'est l'hébergeur (Render) qui le relance.
-// En local, rien ne supervise le process → il faut relancer `node bot.js` à la main.
+
 app.post("/panel/restart", (req, res) => {
   if (!passwordOk(req.body && req.body.password)) {
     return res.status(401).send(panelPage("❌ Mot de passe incorrect (ou panel non configuré)."));
   }
   res.send(panelPage("🔄 Redémarrage en cours…"));
   console.log("🔄 Redémarrage demandé via le panel");
-  setTimeout(() => process.exit(1), 300); // laisse la réponse partir
+  setTimeout(() => process.exit(1), 300);
 });
 
 // =====================
@@ -442,17 +508,30 @@ client.login(process.env.TOKEN).catch((err) => {
   process.exit(1);
 });
 
-// Met à jour le statut d'une candidature en BDD (si Supabase configuré + vrai id).
-// Renvoie true si l'update BDD a réussi.
 async function updateCandidatureStatus(id, statut) {
-  if (!supabase || !isUuid(id)) return false;
-  const { error } = await supabase.from("candidatures").update({ statut }).eq("id", id);
+  if (!supabase || !isUuid(id)) return "off";
+
+  const { data, error } = await supabase
+    .from("candidatures")
+    .update({ statut })
+    .eq("id", id)
+    .select("id");
+
   if (error) {
-    console.error("❌ MAJ statut BDD échouée :", error.message);
-    return false;
+    await reportError(`MAJ statut BDD échouée : ${error.message}`, {
+      path: "interaction/bouton",
+      extra: { id, statut },
+    });
+    return "error";
   }
+
+  if (!data || data.length === 0) {
+    console.warn(`⚠️ Candidature introuvable en BDD : ${id}`);
+    return "missing";
+  }
+
   console.log(`💾 Statut BDD mis à jour : ${id} → ${statut}`);
-  return true;
+  return "ok";
 }
 
 client.on("interactionCreate", async (interaction) => {
@@ -463,11 +542,15 @@ client.on("interactionCreate", async (interaction) => {
   try {
     const logChannel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
 
-    // Synchronise la BDD (accept/refuse/interview → statut). L'échec BDD ne
-    // bloque pas le retour Discord (on informe juste dans le message).
     const statut = STATUS_MAP[action];
-    const synced = statut ? await updateCandidatureStatus(id, statut) : false;
-    const dbNote = statut ? (synced ? " · BDD ✅" : (supabase && isUuid(id) ? " · BDD ⚠️" : "")) : "";
+    const sync = statut ? await updateCandidatureStatus(id, statut) : "off";
+    const DB_NOTES = {
+      ok: " · BDD ✅",
+      missing: " · BDD ⚠️ candidature introuvable (purgée ?)",
+      error: " · BDD ⚠️ erreur de synchro",
+      off: "",
+    };
+    const dbNote = DB_NOTES[sync];
 
     // =====================
     // ACCEPT
@@ -516,6 +599,12 @@ client.on("interactionCreate", async (interaction) => {
           .setStyle(ButtonStyle.Danger)
       );
 
+      if (adminUrl) {
+        newRow.addComponents(
+          new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(adminUrl).setLabel("📂 Back-office")
+        );
+      }
+
       await interaction.update({
         content:
           `🟡 CANDIDATURE **${id}** EN ENTREVUE${dbNote}\n\n` +
@@ -532,13 +621,41 @@ client.on("interactionCreate", async (interaction) => {
     }
 
   } catch (err) {
-    console.error("❌ BUTTON ERROR :", err);
+    await reportError(`Erreur bouton : ${err.message}`, {
+      stack: err.stack,
+      path: "interaction/bouton",
+      extra: { action, id },
+    });
 
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: "❌ Erreur bouton",
-        ephemeral: true
-      });
+      await interaction
+        .reply({ content: "❌ Erreur bouton", flags: MessageFlags.Ephemeral })
+        .catch(() => {});
     }
   }
+});
+
+// =====================
+// FILET DE SÉCURITÉ
+// Toute erreur non rattrapée part vers le salon d'alertes (comme le site),
+// au lieu de tuer le process en silence.
+// =====================
+client.on("error", (err) =>
+  reportError(`Erreur client Discord : ${err.message}`, { stack: err.stack, path: "discord" }),
+);
+
+client.on("shardDisconnect", (event, shardId) =>
+  console.warn(`🔌 Déconnecté de Discord (shard ${shardId}, code ${event?.code}) — reconnexion…`),
+);
+
+process.on("unhandledRejection", (reason) =>
+  reportError(`Rejet de promesse non géré : ${reason?.message ?? reason}`, {
+    stack: reason?.stack,
+    path: "process",
+  }),
+);
+
+process.on("uncaughtException", async (err) => {
+  await reportError(`Exception non gérée : ${err.message}`, { stack: err.stack, path: "process" });
+  process.exit(1);
 });

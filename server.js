@@ -1,20 +1,3 @@
-// =====================================================================
-//  XBZ · Panel de supervision — ⚠️ FICHIER DEVENU INUTILE
-//
-//  Le panel vit désormais DANS bot.js, sur la route /panel : même process
-//  que le bot → le bouton « Redémarrer » redémarre vraiment le bot.
-//  👉 Tu peux supprimer ce fichier.
-//
-//  Il n'est gardé que si tu veux un panneau sur un service séparé.
-//  Dans ce cas : ne le lance JAMAIS en même temps que bot.js sur la même
-//  machine sans définir PANEL_PORT (les deux écoutent le port 3000 →
-//  erreur EADDRINUSE).
-//
-//  Sécurité : le mot de passe vient de la variable d'env PANEL_PASSWORD
-//  (jamais en dur). Absent → le redémarrage est désactivé (fail-safe).
-// =====================================================================
-
-// Charge un .env EN LOCAL (sans effet sur Render, où les variables existent déjà).
 require("dotenv").config({ quiet: true });
 
 const express = require("express");
@@ -27,7 +10,6 @@ const startedAt = Date.now();
 
 app.use(express.urlencoded({ extended: true }));
 
-// Comparaison à temps constant (évite une attaque temporelle sur le mot de passe).
 function passwordOk(input) {
   if (!PANEL_PASSWORD) return false;
   const a = Buffer.from(String(input ?? ""));
@@ -94,10 +76,8 @@ function page(message = "") {
 </main></body></html>`;
 }
 
-// 🌐 Panneau
 app.get("/", (_req, res) => res.send(page()));
 
-// 💓 Santé (JSON) — pratique pour un monitoring/uptime externe.
 app.get("/health", (_req, res) =>
   res.json({
     ok: true,
@@ -106,14 +86,12 @@ app.get("/health", (_req, res) =>
   }),
 );
 
-// 🔁 Redémarrage (Render relance le process après l'exit).
 app.post("/restart", (req, res) => {
   if (!passwordOk(req.body && req.body.password)) {
     return res.status(401).send(page("❌ Mot de passe incorrect (ou panel non configuré)."));
   }
   res.send(page("🔄 Redémarrage en cours…"));
   console.log("🔄 Redémarrage demandé via le panel");
-  // Laisse la réponse partir avant de couper le process.
   setTimeout(() => process.exit(1), 300);
 });
 

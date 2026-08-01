@@ -23,7 +23,6 @@ const getArg = (name) => {
 const URL_TARGET = getArg("--url");
 const SMOKE = args.includes("--smoke");
 
-// --- IDs de salons : doivent rester identiques à bot.js -----------------
 const CHANNELS = {
   "Staff (STAFF_CHANNEL_ID)": "1522304854310256680",
   "Esport (ESPORT_CHANNEL_ID)": "1527664119682044135",
@@ -40,14 +39,11 @@ const ok = (m) => console.log("  ✅", m);
 const warn = (m) => (warns++, console.log("  ⚠️ ", m));
 const bad = (m) => (fails++, console.log("  ❌", m));
 const title = (t) => console.log(`\n${t}\n${"─".repeat(t.length)}`);
-// N'affiche JAMAIS la valeur d'un secret, seulement sa longueur.
 const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSENT");
 
-// =====================================================================
 (async () => {
   console.log("\n🦇 XBZ · Diagnostic du bot\n==========================");
 
-  // ---------------------------------------------------------------
   title("1. Environnement");
   const major = Number(process.versions.node.split(".")[0]);
   major >= 18
@@ -63,7 +59,6 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
     }
   }
 
-  // ---------------------------------------------------------------
   title("2. Variables d'environnement");
   const TOKEN = process.env.TOKEN;
   TOKEN ? ok(`TOKEN ${present(TOKEN)}`) : bad("TOKEN ABSENT → le bot ne peut pas se connecter à Discord");
@@ -89,7 +84,14 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
     ? ok(`SUPPORT_CHANNEL_ID = ${process.env.SUPPORT_CHANNEL_ID}`)
     : warn("SUPPORT_CHANNEL_ID absent → les messages support iront dans le salon staff");
 
-  // ---------------------------------------------------------------
+  /^https?:\/\//.test(process.env.SITE_URL || "")
+    ? ok(`SITE_URL = ${process.env.SITE_URL}`)
+    : warn("SITE_URL absent/invalide → pas de bouton « Back-office » sous les candidatures");
+
+  process.env.DISCORD_ERROR_WEBHOOK_URL
+    ? ok("DISCORD_ERROR_WEBHOOK_URL défini (mêmes alertes que le site)")
+    : warn("DISCORD_ERROR_WEBHOOK_URL absent → les erreurs du bot restent dans les logs Render");
+
   title("3. Supabase (table candidatures)");
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     warn("ignoré (non configuré)");
@@ -100,7 +102,6 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
         auth: { persistSession: false, autoRefreshToken: false },
       });
 
-      // Lecture : valide la clé, la table et les colonnes utilisées par le bot.
       const { data, error } = await supabase
         .from("candidatures")
         .select("id, statut, roster, created_at")
@@ -121,7 +122,6 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
         }
       }
 
-      // Écriture : update sur un id inexistant → 0 ligne touchée, aucune donnée modifiée.
       const { error: upErr } = await supabase
         .from("candidatures")
         .update({ statut: STATUTS[0] })
@@ -134,16 +134,19 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
     }
   }
 
-  // ---------------------------------------------------------------
   title("4. Discord (connexion + salons)");
   if (!TOKEN) {
     bad("ignoré : TOKEN absent");
   } else {
-    const { Client, GatewayIntentBits, PermissionsBitField } = require("discord.js");
+    const { Client, GatewayIntentBits, PermissionsBitField, Events } = require("discord.js");
     const client = new Client({ intents: [GatewayIntentBits.Guilds] });
     try {
       await client.login(TOKEN);
-      await new Promise((r) => (client.isReady() ? r() : client.once("ready", r)));
+      await new Promise((resolve, reject) => {
+        if (client.isReady()) return resolve();
+        const timer = setTimeout(() => reject(new Error("connexion trop longue (30 s)")), 30_000);
+        client.once(Events.ClientReady, () => (clearTimeout(timer), resolve()));
+      });
       ok(`connecté en tant que ${client.user.tag}`);
       ok(`serveurs : ${client.guilds.cache.map((g) => g.name).join(", ") || "aucun"}`);
 
@@ -174,7 +177,6 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
     }
   }
 
-  // ---------------------------------------------------------------
   title("5. API HTTP du bot");
   if (!URL_TARGET) {
     warn("ignoré — relance avec : node check.js --url http://localhost:3000");
@@ -182,7 +184,6 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
     const base = URL_TARGET.replace(/\/+$/, "");
     const secret = process.env.BOT_SHARED_SECRET;
 
-    // 5a. Le bot répond-il ?
     try {
       const r = await fetch(base + "/", { signal: AbortSignal.timeout(60000) });
       const body = await r.text();
@@ -193,7 +194,16 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
       bad(`GET / injoignable : ${e.message} — le bot tourne-t-il sur cette URL ?`);
     }
 
-    // 5b. Le secret protège-t-il vraiment l'API ?
+    try {
+      const r = await fetch(base + "/health", { signal: AbortSignal.timeout(30000) });
+      const h = await r.json();
+      h.ok
+        ? ok(`GET /health → Discord « ${h.discord} », Supabase ${h.supabase ? "connecté" : "non configuré"}, uptime ${h.uptimeSeconds}s`)
+        : bad(`GET /health → ${r.status} : le serveur répond mais Discord est déconnecté`);
+    } catch (e) {
+      warn(`GET /health indisponible : ${e.message} (bot.js pas à jour ?)`);
+    }
+
     if (secret) {
       try {
         const r = await fetch(base + "/recrutement", {
@@ -212,14 +222,13 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
       warn("test du secret ignoré (BOT_SHARED_SECRET non défini ici)");
     }
 
-    // 5c. Envoi réel (opt-in) : un message de test apparaît sur Discord.
     if (SMOKE) {
       const headers = { "Content-Type": "application/json", ...(secret ? { "x-xbz-secret": secret } : {}) };
       const tests = [
         [
           "/recrutement",
           {
-            id: ZERO_UUID, // UUID valide mais inexistant → boutons cliquables, BDD ⚠️ attendu
+            id: ZERO_UUID,
             categorie: "XBZ Esport",
             role: "Joueur",
             nom: "TEST diagnostic",
@@ -232,6 +241,20 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
             rltracker: "https://rocketleague.tracker.network/",
             exp: "Message de test envoyé par check.js",
             motiv: "Vérifier la chaîne site → bot → Discord",
+          },
+        ],
+        [
+          "/recrutement",
+          {
+            categorie: "XBZ Staff",
+            role: "Graphiste",
+            nom: "TEST diagnostic (staff)",
+            age: "25",
+            pays1: "France",
+            discord: "test#0000",
+            pseudo: "TEST",
+            exp: "Message de test envoyé par check.js",
+            motiv: "Vérifier la branche Staff (sans jeu)",
           },
         ],
         [
@@ -266,7 +289,6 @@ const present = (v) => (v ? `défini (${String(v).length} caractères)` : "ABSEN
     }
   }
 
-  // ---------------------------------------------------------------
   console.log(
     `\n==========================\n${fails ? "❌" : "✅"} ${fails} erreur(s), ${warns} avertissement(s)\n`,
   );
