@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "check": "node check.js",
+    "verify": "node --check bot.js && node --check check.js && node --check server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.2",

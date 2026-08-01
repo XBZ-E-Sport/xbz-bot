@@ -4,12 +4,17 @@ require("dotenv").config({ quiet: true });
 
 const express = require("express");
 const cors = require("cors");
+const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+// Formulaire du panel (/panel) → corps encodé en urlencoded.
+app.use(express.urlencoded({ extended: true }));
+
+const startedAt = Date.now();
 
 const {
   Client,
@@ -295,6 +300,110 @@ app.get("/", (req, res) => {
 });
 
 // =====================
+// SANTÉ (JSON) — pour un monitoring externe (UptimeRobot, Better Stack…).
+// Renvoie l'état réel de la connexion Discord, pas juste "le serveur répond".
+// =====================
+app.get("/health", (_req, res) => {
+  const discordOk = client.isReady();
+  res.status(discordOk ? 200 : 503).json({
+    ok: discordOk,
+    discord: discordOk ? client.user.tag : "déconnecté",
+    supabase: Boolean(supabase),
+    uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+    node: process.version,
+  });
+});
+
+// =====================
+// PANEL DE SUPERVISION (/panel)
+// Intégré ICI (et non dans un fichier à part) pour tourner dans le MÊME
+// process que le bot : le bouton redémarre donc vraiment le bot.
+// Sécurité : mot de passe via PANEL_PASSWORD. Absent → redémarrage désactivé.
+// =====================
+const PANEL_PASSWORD = process.env.PANEL_PASSWORD || "";
+
+// Comparaison à temps constant (évite une attaque temporelle sur le mot de passe).
+function passwordOk(input) {
+  if (!PANEL_PASSWORD) return false;
+  const a = Buffer.from(String(input ?? ""));
+  const b = Buffer.from(PANEL_PASSWORD);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+const escapeHtml = (s) =>
+  String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]),
+  );
+
+function formatUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`;
+}
+
+function panelPage(message = "") {
+  const discordOk = client.isReady();
+  const warnMsg = PANEL_PASSWORD ? "" : "⚠️ PANEL_PASSWORD non défini → redémarrage désactivé.";
+  return `<!doctype html>
+<html lang="fr"><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#070710" />
+<title>XBZ · Panel</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         padding:24px; font-family: system-ui, -apple-system, sans-serif; color:#fff;
+         background: linear-gradient(135deg,#070710 0%,#0b1b2e 55%,#06121f 100%); }
+  .card { width:min(92vw,420px); background:rgba(255,255,255,.04);
+          border:1px solid rgba(0,102,255,.25); border-radius:18px; padding:28px;
+          box-shadow:0 20px 60px rgba(0,0,0,.4); }
+  h1 { margin:0 0 6px; font-size:22px; font-weight:900; letter-spacing:.12em; }
+  .status { font-weight:700; font-size:14px; }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; margin:20px 0; font-size:13px; }
+  dt { color:#8ea1b5; }
+  dd { margin:0; color:#c9d6e3; }
+  input, button { width:100%; padding:11px 14px; border-radius:10px; border:0; font-size:14px; }
+  input { background:#0d0d13; color:#fff; margin-bottom:10px; outline:none; }
+  button { background:linear-gradient(90deg,#00bfff,#0066ff); color:#04141f; font-weight:800;
+           cursor:pointer; transition:filter .15s; }
+  button:hover { filter:brightness(1.1); }
+  .msg { margin-top:12px; font-size:13px; color:#ffd27f; min-height:16px; }
+</style></head>
+<body><main class="card">
+  <h1>XBZ · PANEL</h1>
+  <p class="status" style="color:${discordOk ? "#22e0a3" : "#ff7a7a"}">
+    ● ${discordOk ? "Bot en ligne" : "Bot déconnecté"}
+  </p>
+  <dl>
+    <dt>Discord</dt><dd>${discordOk ? escapeHtml(client.user.tag) : "—"}</dd>
+    <dt>Supabase</dt><dd>${supabase ? "connecté" : "non configuré"}</dd>
+    <dt>Uptime</dt><dd>${formatUptime(Date.now() - startedAt)}</dd>
+    <dt>Node</dt><dd>${escapeHtml(process.version)}</dd>
+  </dl>
+  <form method="POST" action="/panel/restart">
+    <input name="password" type="password" placeholder="Mot de passe" autocomplete="off"
+           ${PANEL_PASSWORD ? "" : "disabled"} />
+    <button type="submit" ${PANEL_PASSWORD ? "" : "disabled"}>🔄 Redémarrer le bot</button>
+  </form>
+  <p class="msg">${escapeHtml(message || warnMsg)}</p>
+</main></body></html>`;
+}
+
+app.get("/panel", (_req, res) => res.send(panelPage()));
+
+// ⚠️ Le process s'arrête : c'est l'hébergeur (Render) qui le relance.
+// En local, rien ne supervise le process → il faut relancer `node bot.js` à la main.
+app.post("/panel/restart", (req, res) => {
+  if (!passwordOk(req.body && req.body.password)) {
+    return res.status(401).send(panelPage("❌ Mot de passe incorrect (ou panel non configuré)."));
+  }
+  res.send(panelPage("🔄 Redémarrage en cours…"));
+  console.log("🔄 Redémarrage demandé via le panel");
+  setTimeout(() => process.exit(1), 300); // laisse la réponse partir
+});
+
+// =====================
 // START SERVER
 // =====================
 const PORT = process.env.PORT || 3000;
@@ -319,8 +428,19 @@ if (SELF_URL && typeof fetch === "function") {
 
 // =====================
 // LOGIN DISCORD
+// Un token absent/invalide provoquait un crash brut (unhandled rejection) :
+// on affiche un message explicite avant de sortir.
 // =====================
-client.login(process.env.TOKEN);
+if (!process.env.TOKEN) {
+  console.error("❌ TOKEN absent — crée un fichier .env (voir .env.example) ou ajoute la variable sur Render.");
+  process.exit(1);
+}
+
+client.login(process.env.TOKEN).catch((err) => {
+  console.error("❌ Connexion Discord impossible :", err.message);
+  console.error("   → Vérifie TOKEN (portail Discord › Bot › Reset Token si besoin).");
+  process.exit(1);
+});
 
 // Met à jour le statut d'une candidature en BDD (si Supabase configuré + vrai id).
 // Renvoie true si l'update BDD a réussi.

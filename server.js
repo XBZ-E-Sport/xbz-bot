@@ -1,11 +1,14 @@
 // =====================================================================
-//  XBZ · Panel de supervision (léger, autonome)
+//  XBZ · Panel de supervision — ⚠️ FICHIER DEVENU INUTILE
 //
-//  ⚠️ Ce fichier n'est PAS lancé par `npm start` (qui démarre bot.js).
-//     bot.js occupe déjà le port principal → ce panneau est prévu pour
-//     tourner SÉPARÉMENT (autre service Render, ou en local).
-//     👉 Si tu veux un panneau restart qui redémarre VRAIMENT le bot, il doit
-//        vivre dans le MÊME process → à intégrer dans bot.js (dis-le-moi).
+//  Le panel vit désormais DANS bot.js, sur la route /panel : même process
+//  que le bot → le bouton « Redémarrer » redémarre vraiment le bot.
+//  👉 Tu peux supprimer ce fichier.
+//
+//  Il n'est gardé que si tu veux un panneau sur un service séparé.
+//  Dans ce cas : ne le lance JAMAIS en même temps que bot.js sur la même
+//  machine sans définir PANEL_PORT (les deux écoutent le port 3000 →
+//  erreur EADDRINUSE).
 //
 //  Sécurité : le mot de passe vient de la variable d'env PANEL_PASSWORD
 //  (jamais en dur). Absent → le redémarrage est désactivé (fail-safe).
