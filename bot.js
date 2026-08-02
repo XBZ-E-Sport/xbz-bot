@@ -1,3 +1,5 @@
+// Charge les variables d'un fichier .env EN LOCAL. Sur Render, les variables
+// viennent déjà de la plateforme → dotenv est alors sans effet (aucun risque).
 require("dotenv").config({ quiet: true });
 
 const express = require("express");
@@ -8,7 +10,10 @@ const { createClient } = require("@supabase/supabase-js");
 const app = express();
 
 app.use(cors());
+// 1 Mo : les champs libres du formulaire (expérience, motivation) ne sont pas
+// bornés côté site — la limite express par défaut (100 ko) renverrait un 413.
 app.use(express.json({ limit: "1mb" }));
+// Formulaire du panel (/panel) → corps encodé en urlencoded.
 app.use(express.urlencoded({ extended: true }));
 
 const startedAt = Date.now();
@@ -32,23 +37,33 @@ const ESPORT_CHANNEL_ID = "1527664119682044135";
 const LOG_CHANNEL_ID = "1522335394522333275";
 const STAFF_ROLE_ID = "1524308311820730398";
 const RECRUIT_CATEGORY_ID = "1524308791410294794";
+// Salon des messages support. À défaut → salon staff.
 const SUPPORT_CHANNEL_ID = process.env.SUPPORT_CHANNEL_ID || STAFF_CHANNEL_ID;
 
+// Couleur de l'embed selon la catégorie de candidature
 const CATEGORY_COLORS = {
-  "XBZ Esport": 0x0066ff,
-  "XBZ Staff": 0xa05aff,
+  "XBZ Esport": 0x0066ff, // bleu
+  "XBZ Staff": 0xa05aff, // violet
 };
 
+// Tronque une valeur pour respecter la limite Discord (1024 car. par field)
 const clamp = (s, max = 1024) => (s && s.length > max ? s.slice(0, max - 1) + "…" : s);
 
+// Construit un field d'embed SÛR : jamais vide, jamais trop long.
+// (Discord refuse TOUT l'embed si un seul field dépasse 1024 caractères ou est
+// vide — les formulaires du site ne limitent pas la taille des textes libres.)
+// (Discord refuse aussi l'embed entier au-delà de 6000 caractères : d'où un
+// plafond serré sur les champs courts, large sur les deux textes libres.)
 const field = (name, value, inline = false, max = inline ? 256 : 1024) => ({
   name,
   value: clamp(String(value ?? "").trim() || "N/A", max),
   inline,
 });
 
+// Séparateur invisible pour aligner les colonnes de l'embed.
 const SPACER = { name: "​", value: "​", inline: true };
 
+// URL du site (sans slash final) → lien « Back-office » sous les candidatures.
 const SITE_URL = (process.env.SITE_URL || "").replace(/\/+$/, "");
 const adminUrl = /^https?:\/\//.test(SITE_URL) ? `${SITE_URL}/admin` : null;
 
@@ -67,8 +82,8 @@ async function reportError(message, { stack, path, extra } = {}) {
 
   const signature = `${path ?? ""}:${message}`;
   const now = Date.now();
-  if (now - (recentErrors.get(signature) ?? 0) < 60_000) return;
-  if (recentErrors.size > 300) recentErrors.clear();
+  if (now - (recentErrors.get(signature) ?? 0) < 60_000) return; // déjà signalé
+  if (recentErrors.size > 300) recentErrors.clear(); // garde-fou mémoire
   recentErrors.set(signature, now);
 
   const fields = [{ name: "Source", value: "bot", inline: true }];
@@ -118,8 +133,11 @@ if (!supabase) {
   console.warn("⚠️ Supabase non configuré (SUPABASE_URL / SUPABASE_SECRET_KEY) — synchro BDD désactivée.");
 }
 
+// Action bouton → valeur de `candidatures.statut` (aligné sur le back-office).
 const STATUS_MAP = { accept: "accepte", refuse: "refuse", interview: "entretien" };
 
+// Un vrai id de candidature est un UUID (les anciens messages utilisaient
+// `XBZ-<timestamp>` → on ne tente pas d'update BDD dans ce cas).
 const isUuid = (s) =>
   typeof s === "string" &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
@@ -148,6 +166,8 @@ const client = new Client({
   ]
 });
 
+// `Events.ClientReady` vaut "clientReady" depuis discord.js 14.26 : écrire
+// "ready" en dur déclenche un DeprecationWarning et cassera en v15.
 client.once(Events.ClientReady, () => {
   console.log("🟢 BOT CONNECTÉ :", client.user.tag);
   console.log(supabase ? "💾 Supabase connecté" : "💾 Supabase non configuré");
@@ -167,10 +187,14 @@ app.post("/recrutement", checkSecret, async (req, res) => {
     console.log("🎮 JEU :", data.jeu);
     console.log("🔗 RL TRACKER :", data.rltracker);
 
+    // ID de la candidature : on utilise le vrai id BDD (UUID) envoyé par le site.
+    // Repli sur un id local si absent (anciens appels) → pas de synchro BDD.
     const id = isUuid(data.id) ? data.id : `XBZ-${Date.now()}`;
 
+    // Candidature Esport uniquement si un jeu est renseigné
     const isEsport = Boolean(data.jeu && data.jeu.trim());
 
+    // Routage : salon Esport dédié si configuré, sinon salon staff par défaut
     const targetChannelId =
       isEsport && ESPORT_CHANNEL_ID ? ESPORT_CHANNEL_ID : STAFF_CHANNEL_ID;
 
@@ -206,9 +230,11 @@ app.post("/recrutement", checkSecret, async (req, res) => {
       field("🌍 Pays de résidence", data.pays1, false, 256),
     ];
 
+    // Champs spécifiques à l'Esport (jeu / roster souhaité / RL Tracker)
     if (isEsport) {
       fields.push(field("🕹 Jeu", data.jeu, true));
-
+      // Le site envoie la clé `rang` (contrat historique) qui contient le
+      // ROSTER souhaité. On accepte aussi `roster` si le contrat évolue.
       fields.push(field("🎯 Roster souhaité", data.roster ?? data.rang, true));
 
       if (data.jeu.trim() === "Rocket League") {
@@ -251,16 +277,29 @@ app.post("/recrutement", checkSecret, async (req, res) => {
         .setStyle(ButtonStyle.Secondary)
     );
 
+    // Lien direct vers le back-office du site (si SITE_URL est défini).
     if (adminUrl) {
       row.addComponents(
         new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(adminUrl).setLabel("📂 Back-office")
       );
     }
 
-    await channel.send({
+    const posted = await channel.send({
       embeds: [embed],
       components: [row]
     });
+
+    // Mémorise le message : c'est ce qui permettra au back-office de refléter
+    // un changement de statut SUR CE message précis (voir POST /statut).
+    if (supabase && isUuid(id)) {
+      const { error: linkError } = await supabase
+        .from("candidatures")
+        .update({ discord_message_id: posted.id, discord_channel_id: posted.channelId })
+        .eq("id", id);
+      if (linkError) {
+        console.warn("⚠️ Lien message Discord non enregistré :", linkError.message);
+      }
+    }
     // =====================
     // LOGS COMPLETS
     // =====================
@@ -275,6 +314,10 @@ app.post("/recrutement", checkSecret, async (req, res) => {
               : "Non renseigné"
           }`
         : "";
+
+      // Discord refuse un message > 2000 caractères → on tronque.
+      // Isolé dans son propre try : un log raté ne doit PAS faire échouer
+      // la requête du site alors que la candidature est déjà postée.
       const logContent =
 `📩 **Nouvelle candidature reçue**
 
@@ -345,6 +388,7 @@ app.post("/support", checkSecret, async (req, res) => {
       .setFooter({ text: "XBZ Support System" })
       .setTimestamp();
 
+    // `id` optionnel : si le site l'envoie un jour, il s'affiche (rétro-compatible).
     if (data.id) embed.setDescription(`🆔 ID : **${clamp(String(data.id), 100)}**`);
 
     await channel.send({ embeds: [embed] });
@@ -355,6 +399,75 @@ app.post("/support", checkSecret, async (req, res) => {
     await reportError(`Message support non posté : ${err.message}`, {
       stack: err.stack,
       path: "/support",
+    });
+    return res.status(500).json({ ok: false, error: "ERROR" });
+  }
+});
+
+// =====================
+// API STATUT (back-office → Discord)
+// Le site appelle cette route quand le staff change un statut depuis /admin :
+// le message Discord d'origine est réécrit pour refléter la décision, au lieu
+// de rester indéfiniment avec ses boutons « Accepter / Refuser ».
+// =====================
+const STATUT_VIEWS = {
+  accepte: { emoji: "🟢", label: "ACCEPTÉE", final: true },
+  refuse: { emoji: "🔴", label: "REFUSÉE", final: true },
+  entretien: { emoji: "🟡", label: "EN ENTRETIEN", final: false },
+  en_attente: { emoji: "⏳", label: "REMISE EN ATTENTE", final: false },
+};
+
+app.post("/statut", checkSecret, async (req, res) => {
+  try {
+    const { id, statut, by } = req.body ?? {};
+    const view = STATUT_VIEWS[statut];
+
+    if (!isUuid(id) || !view) {
+      return res.status(400).json({ ok: false, error: "id ou statut invalide" });
+    }
+    if (!supabase) {
+      return res.status(503).json({ ok: false, error: "Supabase non configuré" });
+    }
+
+    // Où se trouve le message d'origine ?
+    const { data, error } = await supabase
+      .from("candidatures")
+      .select("discord_message_id, discord_channel_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    if (!data?.discord_message_id) {
+      // Candidature antérieure à cette fonctionnalité : rien à réécrire.
+      console.log("ℹ️ Pas de message Discord lié à", id);
+      return res.status(200).json({ ok: true, updated: false, reason: "no_message" });
+    }
+
+    const channel = await client.channels.fetch(data.discord_channel_id).catch(() => null);
+    const message = channel ? await channel.messages.fetch(data.discord_message_id).catch(() => null) : null;
+
+    if (!message) {
+      console.warn("⚠️ Message Discord introuvable (supprimé ?) pour", id);
+      return res.status(200).json({ ok: true, updated: false, reason: "message_gone" });
+    }
+
+    const who = String(by ?? "le back-office").slice(0, 100);
+    await message.edit({
+      content: `${view.emoji} CANDIDATURE **${id}** ${view.label} par ${who} · via le back-office`,
+      components: candidatureButtons(id, { compact: view.final }),
+    });
+
+    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+    if (logChannel) {
+      await logChannel.send(`${view.emoji} **${id}** → ${view.label} (back-office, ${who})`).catch(() => {});
+    }
+
+    console.log(`🔄 Statut reflété sur Discord : ${id} → ${statut}`);
+    return res.status(200).json({ ok: true, updated: true });
+  } catch (err) {
+    await reportError(`Statut non reflété sur Discord : ${err.message}`, {
+      stack: err.stack,
+      path: "/statut",
     });
     return res.status(500).json({ ok: false, error: "ERROR" });
   }
@@ -390,6 +503,7 @@ app.get("/health", (_req, res) => {
 // =====================
 const PANEL_PASSWORD = process.env.PANEL_PASSWORD || "";
 
+// Comparaison à temps constant (évite une attaque temporelle sur le mot de passe).
 function passwordOk(input) {
   if (!PANEL_PASSWORD) return false;
   const a = Buffer.from(String(input ?? ""));
@@ -459,14 +573,15 @@ function panelPage(message = "") {
 
 app.get("/panel", (_req, res) => res.send(panelPage()));
 
-
+// ⚠️ Le process s'arrête : c'est l'hébergeur (Render) qui le relance.
+// En local, rien ne supervise le process → il faut relancer `node bot.js` à la main.
 app.post("/panel/restart", (req, res) => {
   if (!passwordOk(req.body && req.body.password)) {
     return res.status(401).send(panelPage("❌ Mot de passe incorrect (ou panel non configuré)."));
   }
   res.send(panelPage("🔄 Redémarrage en cours…"));
   console.log("🔄 Redémarrage demandé via le panel");
-  setTimeout(() => process.exit(1), 300);
+  setTimeout(() => process.exit(1), 300); // laisse la réponse partir
 });
 
 // =====================
@@ -508,6 +623,9 @@ client.login(process.env.TOKEN).catch((err) => {
   process.exit(1);
 });
 
+// Met à jour le statut d'une candidature en BDD (si Supabase configuré + vrai id).
+// Renvoie : "ok" | "off" (pas de BDD ou id historique) | "missing" (ligne absente,
+// ex. purgée par la rétention 24 mois) | "error".
 async function updateCandidatureStatus(id, statut) {
   if (!supabase || !isUuid(id)) return "off";
 
@@ -524,7 +642,8 @@ async function updateCandidatureStatus(id, statut) {
     });
     return "error";
   }
-
+  // 0 ligne touchée : la candidature n'existe plus (purge RGPD à 24 mois,
+  // suppression manuelle…) → on le dit au staff plutôt que de mentir.
   if (!data || data.length === 0) {
     console.warn(`⚠️ Candidature introuvable en BDD : ${id}`);
     return "missing";
@@ -534,16 +653,58 @@ async function updateCandidatureStatus(id, statut) {
   return "ok";
 }
 
+// Codes Discord signifiant « cette interaction est déjà traitée ou expirée » :
+// 40060 (already acknowledged), 10062 (unknown interaction), 40062 (in progress).
+// Ce n'est pas une panne : soit un second processus du bot tourne en parallèle,
+// soit la couche REST a rejoué une requête déjà passée. On log sans alerter.
+const ALREADY_HANDLED = new Set([40060, 10062, 40062]);
+const isAlreadyHandled = (err) => ALREADY_HANDLED.has(err?.code);
+
+/** Rangée de boutons d'une candidature (`compact` = décision prise). */
+function candidatureButtons(id, { compact = false } = {}) {
+  const row = new ActionRowBuilder();
+  if (!compact) {
+    row.addComponents(
+      new ButtonBuilder().setCustomId(`accept_${id}`).setLabel("✅ Accepter").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`refuse_${id}`).setLabel("❌ Refuser").setStyle(ButtonStyle.Danger),
+    );
+  }
+  if (adminUrl) {
+    row.addComponents(
+      new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(adminUrl).setLabel("📂 Back-office"),
+    );
+  }
+  return row.components.length ? [row] : [];
+}
+
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
   const [action, id] = interaction.customId.split("_");
+  const statut = STATUS_MAP[action];
+  if (!statut) return; // bouton inconnu (ou lien) → rien à faire
 
+  // ÉTAPE 1 — accuser réception IMMÉDIATEMENT.
+  // Discord n'accorde que 3 secondes : la requête Supabase qui suit pouvait
+  // dépasser ce délai (Render endormi, base lente) et faire échouer le bouton.
   try {
-    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+    await interaction.deferUpdate();
+  } catch (err) {
+    if (isAlreadyHandled(err)) {
+      console.warn(`↩️ Interaction déjà traitée (${err.code}) — ignorée : ${action} ${id}`);
+      return;
+    }
+    await reportError(`Accusé de réception impossible : ${err.message}`, {
+      stack: err.stack,
+      path: "interaction/bouton",
+      extra: { action, id, code: err.code },
+    });
+    return;
+  }
 
-    const statut = STATUS_MAP[action];
-    const sync = statut ? await updateCandidatureStatus(id, statut) : "off";
+  // ÉTAPE 2 — travail lent, sans contrainte de temps désormais.
+  try {
+    const sync = await updateCandidatureStatus(id, statut);
     const DB_NOTES = {
       ok: " · BDD ✅",
       missing: " · BDD ⚠️ candidature introuvable (purgée ?)",
@@ -551,87 +712,45 @@ client.on("interactionCreate", async (interaction) => {
       off: "",
     };
     const dbNote = DB_NOTES[sync];
+    const who = interaction.user.tag;
 
-    // =====================
-    // ACCEPT
-    // =====================
-    if (action === "accept") {
-      await interaction.update({
-        content: `🟢 CANDIDATURE **${id}** ACCEPTÉE par ${interaction.user.tag}${dbNote}`,
-        components: []
-      });
-
-      if (logChannel) {
-        logChannel.send(`✔ Candidature **${id}** ACCEPTÉE${dbNote}`);
-      }
-      return;
-    }
-
-    // =====================
-    // REFUSE
-    // =====================
-    if (action === "refuse") {
-      await interaction.update({
-        content: `🔴 CANDIDATURE **${id}** REFUSÉE par ${interaction.user.tag}${dbNote}`,
-        components: []
-      });
-
-      if (logChannel) {
-        logChannel.send(`❌ Candidature **${id}** REFUSÉE${dbNote}`);
-      }
-      return;
-    }
-
-    // =====================
-    // INTERVIEW (MODE ATTENTE)
-    // =====================
-    if (action === "interview") {
-
-      const newRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`accept_${id}`)
-          .setLabel("✅ Accepter")
-          .setStyle(ButtonStyle.Success),
-
-        new ButtonBuilder()
-          .setCustomId(`refuse_${id}`)
-          .setLabel("❌ Refuser")
-          .setStyle(ButtonStyle.Danger)
-      );
-
-      if (adminUrl) {
-        newRow.addComponents(
-          new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(adminUrl).setLabel("📂 Back-office")
-        );
-      }
-
-      await interaction.update({
+    const VIEWS = {
+      accept: {
+        content: `🟢 CANDIDATURE **${id}** ACCEPTÉE par ${who}${dbNote}`,
+        components: candidatureButtons(id, { compact: true }),
+        log: `✔ Candidature **${id}** ACCEPTÉE par ${who}${dbNote}`,
+      },
+      refuse: {
+        content: `🔴 CANDIDATURE **${id}** REFUSÉE par ${who}${dbNote}`,
+        components: candidatureButtons(id, { compact: true }),
+        log: `❌ Candidature **${id}** REFUSÉE par ${who}${dbNote}`,
+      },
+      interview: {
         content:
           `🟡 CANDIDATURE **${id}** EN ENTREVUE${dbNote}\n\n` +
-          `👤 Demandé par ${interaction.user.tag}\n` +
+          `👤 Demandé par ${who}\n` +
           `⏳ Statut : EN ATTENTE D'ENTRETIEN`,
-        components: [newRow]
-      });
+        // L'entretien n'est pas une décision finale : on garde Accepter/Refuser.
+        components: candidatureButtons(id),
+        log: `🟡 Entretien demandé pour **${id}** par ${who}${dbNote}`,
+      },
+    };
 
-      if (logChannel) {
-        logChannel.send(`🟡 Entretien demandé pour **${id}**${dbNote}`);
-      }
+    const view = VIEWS[action];
+    await interaction.editReply({ content: view.content, components: view.components });
 
+    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+    if (logChannel) await logChannel.send(view.log).catch(() => {});
+  } catch (err) {
+    if (isAlreadyHandled(err)) {
+      console.warn(`↩️ Interaction déjà traitée (${err.code}) — ignorée : ${action} ${id}`);
       return;
     }
-
-  } catch (err) {
     await reportError(`Erreur bouton : ${err.message}`, {
       stack: err.stack,
       path: "interaction/bouton",
-      extra: { action, id },
+      extra: { action, id, code: err.code },
     });
-
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction
-        .reply({ content: "❌ Erreur bouton", flags: MessageFlags.Ephemeral })
-        .catch(() => {});
-    }
   }
 });
 
@@ -657,5 +776,5 @@ process.on("unhandledRejection", (reason) =>
 
 process.on("uncaughtException", async (err) => {
   await reportError(`Exception non gérée : ${err.message}`, { stack: err.stack, path: "process" });
-  process.exit(1);
+  process.exit(1); // Render relance le service
 });
